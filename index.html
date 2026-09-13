@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Stroke Tracker com IA</title>
+    <title>Stroke Tracker com IA de Visão</title>
     <style>
         * {
             margin: 0;
@@ -135,13 +135,17 @@
             object-fit: cover;
         }
 
-        #canvas {
+        #canvas, #detectionCanvas {
             position: absolute;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
-            opacity: 1;
+        }
+
+        #detectionCanvas {
+            opacity: 0.5;
+            pointer-events: none;
         }
 
         .camera-overlay {
@@ -655,11 +659,12 @@
 
     <!-- CAMERA -->
     <div id="cameraScreen" class="screen">
-        <h1>📹 Gravando com IA</h1>
+        <h1>📹 Gravando com Detecção IA</h1>
 
         <div class="camera-container">
             <video id="video" autoplay playsinline muted></video>
             <canvas id="canvas"></canvas>
+            <canvas id="detectionCanvas"></canvas>
             <div class="camera-overlay" id="recBadge">
                 <div class="rec-dot"></div>
                 REC
@@ -689,33 +694,37 @@
         <div class="controls">
             <button class="btn-primary" id="btnStart" onclick="startRec()">▶️ Iniciar</button>
             <button class="btn-success" id="btnStop" onclick="stopRec()" disabled>⏹️ Parar</button>
-            <button class="btn-warning" onclick="markCum()">💦</button>
+            <button class="btn-warning" id="btnCum" onclick="markCum()">💦 Manual</button>
         </div>
 
         <div class="ai-panel">
             <div class="ai-title">
-                🤖 Análise IA MediaPipe
-                <span class="ai-status loading" id="aiStatus">Carregando...</span>
+                🎥 Análise de Movimento e Fluidos
+                <span class="ai-status active" id="aiStatus">Ativo</span>
             </div>
             <div class="ai-row">
-                <span>Status IA:</span>
-                <span id="aiReady">Inicializando...</span>
+                <span>Status Detecção:</span>
+                <span id="aiReady">✅ Pronto</span>
             </div>
             <div class="ai-row">
-                <span>Velocidade Detectada:</span>
-                <span id="aiSpeed">0 SPM</span>
+                <span>Movimento Detectado:</span>
+                <span id="aiMovement">0%</span>
+            </div>
+            <div class="ai-row">
+                <span>Velocidade (SPM):</span>
+                <span id="aiSpeed">0</span>
             </div>
             <div class="ai-row">
                 <span>Intensidade:</span>
                 <span id="aiInt">-</span>
             </div>
             <div class="ai-row">
-                <span>Pontos Detectados:</span>
-                <span id="aiPoints">0</span>
+                <span>Fluido Detectado:</span>
+                <span id="aiFluid">❌ Não</span>
             </div>
             <div class="ai-row">
-                <span>Confiança:</span>
-                <span id="aiConfidence">0%</span>
+                <span>Confiança Fluido:</span>
+                <span id="aiFluidConfidence">0%</span>
             </div>
         </div>
     </div>
@@ -752,10 +761,18 @@
 
         <div class="setting">
             <div class="setting-info">
-                <h4>IA MediaPipe</h4>
-                <p>Análise de movimento com IA</p>
+                <h4>Detecção de Movimento</h4>
+                <p>Análise automática de strokes</p>
             </div>
-            <div class="toggle active" id="toggleAI" onclick="toggleSetting(this, 'aiDetection')"></div>
+            <div class="toggle active" id="toggleMovement" onclick="toggleSetting(this, 'movementDetection')"></div>
+        </div>
+
+        <div class="setting">
+            <div class="setting-info">
+                <h4>Detecção de Fluido</h4>
+                <p>Conta cums automaticamente 💦</p>
+            </div>
+            <div class="toggle active" id="toggleFluid" onclick="toggleSetting(this, 'fluidDetection')"></div>
         </div>
 
         <div class="setting">
@@ -826,11 +843,6 @@
         </div>
     </div>
 
-    <!-- MediaPipe Scripts -->
-    <script async src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
-    <script async src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
-    <script async src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
-
     <script>
         // ==================== DADOS ====================
         let data = {
@@ -845,7 +857,8 @@
             level: 1,
             settings: {
                 privateMode: false,
-                aiDetection: true,
+                movementDetection: true,
+                fluidDetection: true,
                 soundEnabled: false
             },
             achievements: [
@@ -863,152 +876,6 @@
             ]
         };
 
-        // ==================== MEDIAPIPE ====================
-        let pose = null;
-        let poseLoaded = false;
-        let previousPositions = [];
-        let movementBuffer = [];
-        const MOVEMENT_THRESHOLD = 0.05;
-        const BUFFER_SIZE = 5;
-
-        async function initPose() {
-            try {
-                pose = new Pose({
-                    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
-                });
-
-                pose.onResults(onPoseResults);
-
-                poseLoaded = true;
-                document.getElementById('aiReady').textContent = '✅ Pronto';
-                document.getElementById('aiStatus').textContent = 'Ativo';
-                document.getElementById('aiStatus').classList.remove('loading');
-                document.getElementById('aiStatus').classList.add('active');
-                console.log('MediaPipe Pose carregado com sucesso!');
-            } catch (e) {
-                console.error('Erro ao carregar MediaPipe:', e);
-                document.getElementById('aiReady').textContent = '❌ Erro';
-            }
-        }
-
-        function onPoseResults(results) {
-            if (!recordingState.recording) return;
-
-            const canvas = document.getElementById('canvas');
-            const canvasCtx = canvas.getContext('2d');
-
-            canvas.width = canvas.offsetWidth;
-            canvas.height = canvas.offsetHeight;
-
-            // Desenhar pose
-            if (results.poseLandmarks && results.poseLandmarks.length > 0) {
-                drawPose(canvasCtx, results.poseLandmarks, canvas.width, canvas.height);
-                analyzeMovement(results.poseLandmarks);
-            }
-        }
-
-        function drawPose(ctx, landmarks, width, height) {
-            // Limpar canvas
-            ctx.clearRect(0, 0, width, height);
-
-            // Desenhar conexões
-            const connections = [
-                [11, 12], // ombros
-                [11, 13], [13, 15], // braço esquerdo
-                [12, 14], [14, 16], // braço direito
-                [11, 23], [12, 24], // cintura
-                [23, 24], // quadril
-            ];
-
-            ctx.lineWidth = 2;
-            ctx.strokeStyle = '#ff2d55';
-
-            connections.forEach(([start, end]) => {
-                if (landmarks[start] && landmarks[end]) {
-                    const startX = landmarks[start].x * width;
-                    const startY = landmarks[start].y * height;
-                    const endX = landmarks[end].x * width;
-                    const endY = landmarks[end].y * height;
-
-                    if (landmarks[start].visibility > 0.3 && landmarks[end].visibility > 0.3) {
-                        ctx.beginPath();
-                        ctx.moveTo(startX, startY);
-                        ctx.lineTo(endX, endY);
-                        ctx.stroke();
-                    }
-                }
-            });
-
-            // Desenhar pontos
-            ctx.fillStyle = '#ff6b8a';
-            landmarks.forEach((landmark, idx) => {
-                if (landmark.visibility > 0.3) {
-                    const x = landmark.x * width;
-                    const y = landmark.y * height;
-                    ctx.beginPath();
-                    ctx.arc(x, y, 4, 0, 2 * Math.PI);
-                    ctx.fill();
-                }
-            });
-        }
-
-        function analyzeMovement(landmarks) {
-            if (!landmarks || landmarks.length === 0) return;
-
-            // Pontos importantes: ombros (11, 12), cotovelos (13, 14), pulsos (15, 16)
-            const keyPoints = [11, 12, 13, 14, 15, 16];
-            const currentPositions = keyPoints.map(i => ({
-                x: landmarks[i].x,
-                y: landmarks[i].y,
-                z: landmarks[i].z,
-                visibility: landmarks[i].visibility
-            }));
-
-            // Calcular movimento
-            if (previousPositions.length > 0) {
-                let totalMovement = 0;
-                let visiblePoints = 0;
-
-                for (let i = 0; i < currentPositions.length; i++) {
-                    if (currentPositions[i].visibility > 0.3 && previousPositions[i].visibility > 0.3) {
-                        const dx = currentPositions[i].x - previousPositions[i].x;
-                        const dy = currentPositions[i].y - previousPositions[i].y;
-                        const dz = currentPositions[i].z - previousPositions[i].z;
-
-                        const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-                        totalMovement += distance;
-                        visiblePoints++;
-                    }
-                }
-
-                // Detectar stroke
-                if (visiblePoints > 0) {
-                    const avgMovement = totalMovement / visiblePoints;
-                    movementBuffer.push(avgMovement);
-
-                    if (movementBuffer.length > BUFFER_SIZE) {
-                        movementBuffer.shift();
-                    }
-
-                    // Detectar pico de movimento (stroke)
-                    if (avgMovement > MOVEMENT_THRESHOLD && movementBuffer.length > 1) {
-                        const previousAvg = movementBuffer.slice(0, -1).reduce((a, b) => a + b, 0) / (movementBuffer.length - 1);
-                        if (avgMovement > previousAvg * 1.5) {
-                            recordingState.strokes++;
-                            updateLive();
-                        }
-                    }
-
-                    // Atualizar confiança
-                    const confidence = (visiblePoints / keyPoints.length) * 100;
-                    document.getElementById('aiConfidence').textContent = Math.round(confidence) + '%';
-                    document.getElementById('aiPoints').textContent = visiblePoints + '/' + keyPoints.length;
-                }
-            }
-
-            previousPositions = currentPositions;
-        }
-
         // ==================== ESTADO DA GRAVAÇÃO ====================
         let recordingState = {
             stream: null,
@@ -1019,8 +886,192 @@
             strokes: 0,
             cums: 0,
             recording: false,
-            camera: null
+            analysisInterval: null,
+            prevImageData: null,
+            lastStrokeTime: 0,
+            lastFluidTime: 0
         };
+
+        // ==================== CANVAS ANALYSIS ====================
+        function initAnalysis() {
+            recordingState.analysisInterval = setInterval(() => {
+                if (!recordingState.recording) return;
+                
+                const video = document.getElementById('video');
+                const canvas = document.getElementById('canvas');
+                const detectionCanvas = document.getElementById('detectionCanvas');
+                
+                if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                    const ctx = canvas.getContext('2d');
+                    const detectionCtx = detectionCanvas.getContext('2d');
+                    
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    detectionCanvas.width = video.videoWidth;
+                    detectionCanvas.height = video.videoHeight;
+                    
+                    // Desenhar video no canvas
+                    ctx.drawImage(video, 0, 0);
+                    
+                    // Analisar movimento
+                    analyzeMotion(ctx, canvas.width, canvas.height, detectionCtx);
+                    
+                    // Analisar fluidos
+                    analyzeFluid(ctx, canvas.width, canvas.height, detectionCtx);
+                }
+            }, 33); // ~30fps
+        }
+
+        function analyzeMotion(ctx, width, height, detectionCtx) {
+            const imageData = ctx.getImageData(0, 0, width, height);
+            const data = imageData.data;
+            
+            if (!recordingState.prevImageData) {
+                recordingState.prevImageData = imageData;
+                return;
+            }
+            
+            const prevData = recordingState.prevImageData.data;
+            let totalDifference = 0;
+            let pixelCount = 0;
+            
+            // Analisar diferença entre frames (a cada 4 pixels)
+            for (let i = 0; i < data.length; i += 16) {
+                const rDiff = Math.abs(data[i] - prevData[i]);
+                const gDiff = Math.abs(data[i+1] - prevData[i+1]);
+                const bDiff = Math.abs(data[i+2] - prevData[i+2]);
+                
+                totalDifference += (rDiff + gDiff + bDiff);
+                pixelCount++;
+            }
+            
+            const avgDifference = pixelCount > 0 ? totalDifference / pixelCount : 0;
+            const movementIntensity = Math.min(100, (avgDifference / 255) * 100);
+            
+            // Atualizar UI
+            document.getElementById('aiMovement').textContent = Math.round(movementIntensity) + '%';
+            
+            // Detectar stroke (pico de movimento)
+            const now = Date.now();
+            const STROKE_THRESHOLD = 20;
+            const STROKE_COOLDOWN = 200; // ms entre strokes
+            
+            if (data.settings?.movementDetection && 
+                movementIntensity > STROKE_THRESHOLD && 
+                now - recordingState.lastStrokeTime > STROKE_COOLDOWN) {
+                
+                recordingState.strokes++;
+                recordingState.lastStrokeTime = now;
+                updateLive();
+                playStrokeSound();
+                
+                // Desenhar ponto de detecção
+                detectionCtx.fillStyle = 'rgba(255, 45, 85, 0.8)';
+                detectionCtx.fillRect(0, 0, width, 30);
+                detectionCtx.fillStyle = 'white';
+                detectionCtx.font = '20px Arial';
+                detectionCtx.fillText('STROKE!', 10, 22);
+            }
+            
+            recordingState.prevImageData = imageData;
+        }
+
+        function analyzeFluid(ctx, width, height, detectionCtx) {
+            const imageData = ctx.getImageData(0, 0, width, height);
+            const data = imageData.data;
+            
+            let whitePixels = 0;
+            let totalPixels = 0;
+            
+            // Detectar pixels brancos/translúcidos
+            for (let i = 0; i < data.length; i += 4) {
+                const r = data[i];
+                const g = data[i+1];
+                const b = data[i+2];
+                const a = data[i+3];
+                
+                totalPixels++;
+                
+                // Pixels brancos/translúcidos (viscosos/gosmento)
+                // R > 150, G > 150, B > 150, ligeiramente opaco
+                if (r > 150 && g > 150 && b > 150 && a > 100) {
+                    whitePixels++;
+                }
+            }
+            
+            const whitePercentage = totalPixels > 0 ? (whitePixels / totalPixels) * 100 : 0;
+            
+            // Atualizar UI
+            document.getElementById('aiFluidConfidence').textContent = Math.round(whitePercentage * 2) + '%';
+            
+            // Detectar fluido (> 2% de pixels brancos)
+            const FLUID_THRESHOLD = 2;
+            const FLUID_COOLDOWN = 2000; // 2 segundos entre detecções
+            const now = Date.now();
+            
+            if (data.settings?.fluidDetection && 
+                whitePercentage > FLUID_THRESHOLD &&
+                now - recordingState.lastFluidTime > FLUID_COOLDOWN) {
+                
+                recordingState.cums++;
+                recordingState.lastFluidTime = now;
+                document.getElementById('aiFluid').textContent = '✅ SIM!';
+                playFluidSound();
+                
+                // Feedback visual
+                detectionCtx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                detectionCtx.fillRect(0, height - 40, width, 40);
+                detectionCtx.fillStyle = '#000';
+                detectionCtx.font = 'bold 24px Arial';
+                detectionCtx.fillText('💦 FLUIDO DETECTADO!', 10, height - 12);
+                
+                setTimeout(() => {
+                    document.getElementById('aiFluid').textContent = '❌ Não';
+                }, 500);
+            }
+        }
+
+        // ==================== SONS ====================
+        function playStrokeSound() {
+            if (!data.settings.soundEnabled) return;
+            
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+            
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+            
+            oscillator.frequency.value = 600;
+            oscillator.type = 'sine';
+            
+            gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.05);
+            
+            oscillator.start(audioContext.currentTime);
+            oscillator.stop(audioContext.currentTime + 0.05);
+        }
+
+        function playFluidSound() {
+            if (!data.settings.soundEnabled) return;
+            
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+            
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+            
+            // Som mais alto e diferente para fluido
+            oscillator.frequency.value = 1000;
+            oscillator.type = 'sine';
+            
+            gainNode.gain.setValueAtTime(0.2, audioContext.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.15);
+            
+            oscillator.start(audioContext.currentTime);
+            oscillator.stop(audioContext.currentTime + 0.15);
+        }
 
         // ==================== CARREGAR/SALVAR ====================
         function load() {
@@ -1035,7 +1086,6 @@
             loadSettings();
             updateUI();
             renderAchievements();
-            initPose();
         }
 
         function save() {
@@ -1050,8 +1100,11 @@
             if (data.settings?.privateMode) {
                 document.getElementById('togglePrivate')?.classList.add('active');
             }
-            if (data.settings?.aiDetection) {
-                document.getElementById('toggleAI')?.classList.add('active');
+            if (data.settings?.movementDetection) {
+                document.getElementById('toggleMovement')?.classList.add('active');
+            }
+            if (data.settings?.fluidDetection) {
+                document.getElementById('toggleFluid')?.classList.add('active');
             }
             if (data.settings?.soundEnabled) {
                 document.getElementById('toggleSound')?.classList.add('active');
@@ -1092,8 +1145,9 @@
         function startSession() {
             recordingState.strokes = 0;
             recordingState.cums = 0;
-            previousPositions = [];
-            movementBuffer = [];
+            recordingState.prevImageData = null;
+            recordingState.lastStrokeTime = 0;
+            recordingState.lastFluidTime = 0;
             document.getElementById('cameraScreen').classList.add('active');
             document.getElementById('homeScreen').classList.remove('active');
             document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -1110,19 +1164,6 @@
                 const video = document.getElementById('video');
                 video.srcObject = recordingState.stream;
 
-                // Inicializar MediaPipe Camera
-                recordingState.camera = new Camera(video, {
-                    onFrame: async () => {
-                        if (poseLoaded) {
-                            await pose.send({image: video});
-                        }
-                    },
-                    width: 1280,
-                    height: 720
-                });
-
-                recordingState.camera.start();
-
                 recordingState.recorder = new MediaRecorder(recordingState.stream);
                 recordingState.chunks = [];
                 recordingState.recorder.ondataavailable = e => recordingState.chunks.push(e.data);
@@ -1131,9 +1172,13 @@
                 recordingState.startTime = Date.now();
                 recordingState.recording = true;
                 recordingState.timerInterval = setInterval(updateTimer, 100);
+                
+                // Iniciar análise
+                initAnalysis();
 
                 document.getElementById('btnStart').disabled = true;
                 document.getElementById('btnStop').disabled = false;
+                document.getElementById('btnCum').disabled = false;
                 document.getElementById('recBadge').classList.add('active');
             } catch (e) {
                 alert('Erro na câmera: ' + e.message);
@@ -1152,7 +1197,7 @@
 
             const elapsedMin = elapsed / 60;
             const spm = elapsedMin > 0 ? Math.round(recordingState.strokes / elapsedMin) : 0;
-            document.getElementById('aiSpeed').textContent = spm + ' SPM';
+            document.getElementById('aiSpeed').textContent = spm;
 
             if (spm < 40) document.getElementById('aiInt').textContent = 'Baixa';
             else if (spm < 80) document.getElementById('aiInt').textContent = 'Média';
@@ -1174,36 +1219,13 @@
 
         function markCum() {
             recordingState.cums++;
-            if (data.settings.soundEnabled) {
-                playSound();
-            }
-        }
-
-        function playSound() {
-            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            const oscillator = audioContext.createOscillator();
-            const gainNode = audioContext.createGain();
-
-            oscillator.connect(gainNode);
-            gainNode.connect(audioContext.destination);
-
-            oscillator.frequency.value = 800;
-            oscillator.type = 'sine';
-
-            gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
-            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1);
-
-            oscillator.start(audioContext.currentTime);
-            oscillator.stop(audioContext.currentTime + 0.1);
+            playFluidSound();
         }
 
         function stopRec() {
             clearInterval(recordingState.timerInterval);
+            clearInterval(recordingState.analysisInterval);
             recordingState.recording = false;
-
-            if (recordingState.camera) {
-                recordingState.camera.stop();
-            }
 
             if (recordingState.recorder && recordingState.recorder.state !== 'inactive') {
                 recordingState.recorder.stop();
@@ -1220,7 +1242,7 @@
                 cums: recordingState.cums || 1,
                 spm: spm,
                 calories: Math.floor(duration * 0.12),
-                aiEnabled: data.settings.aiDetection
+                autoDetected: true
             };
 
             saveSession(session);
@@ -1231,14 +1253,16 @@
 
             document.getElementById('btnStart').disabled = false;
             document.getElementById('btnStop').disabled = true;
+            document.getElementById('btnCum').disabled = true;
             document.getElementById('recBadge').classList.remove('active');
             document.getElementById('timer').textContent = '00:00';
             document.getElementById('liveStrokes').textContent = '0';
             document.getElementById('liveSPM').textContent = '0';
             document.getElementById('liveCal').textContent = '0';
             document.getElementById('bigCounter').textContent = '0';
-            document.getElementById('aiConfidence').textContent = '0%';
-            document.getElementById('aiPoints').textContent = '0';
+            document.getElementById('aiMovement').textContent = '0%';
+            document.getElementById('aiFluid').textContent = '❌ Não';
+            document.getElementById('aiFluidConfidence').textContent = '0%';
         }
 
         // ==================== SALVAR SESSÃO ====================
@@ -1285,7 +1309,7 @@
             xp += s.cums * 15;
             if (s.spm > 80) xp += 30;
             if (s.duration > 600) xp += 40;
-            if (s.aiEnabled) xp += 20;
+            if (s.autoDetected) xp += 25;
             return Math.floor(xp);
         }
 
@@ -1348,9 +1372,9 @@
                 const d = new Date(s.date);
                 const div = document.createElement('div');
                 div.className = 'session-card';
-                const aiLabel = s.aiEnabled ? '🤖' : '📱';
+                const autoLabel = s.autoDetected ? '🎥' : '👆';
                 div.innerHTML = `
-                    <div class="session-date">${d.toLocaleDateString('pt-BR')} ${d.toLocaleTimeString('pt-BR')} ${aiLabel}</div>
+                    <div class="session-date">${d.toLocaleDateString('pt-BR')} ${d.toLocaleTimeString('pt-BR')} ${autoLabel}</div>
                     <div class="session-stats">
                         <span class="session-stat">👋 ${s.strokes}</span>
                         <span class="session-stat">⏱️ ${formatTime(s.duration)}</span>
@@ -1372,7 +1396,7 @@
             const totalTime = data.sessions.reduce((a, s) => a + s.duration, 0);
             const avgSPM = Math.round(data.sessions.reduce((a, s) => a + s.spm, 0) / data.sessions.length);
             const strokesPerCum = data.totalCum > 0 ? (data.totalStrokes / data.totalCum).toFixed(1) : 0;
-            const aiSessions = data.sessions.filter(s => s.aiEnabled).length;
+            const autoSessions = data.sessions.filter(s => s.autoDetected).length;
 
             div.innerHTML = `
                 <div class="stat-card" style="margin-bottom:10px;">
@@ -1388,8 +1412,8 @@
                     <div class="stat-label">Strokes/Gozada</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-value">${aiSessions}</div>
-                    <div class="stat-label">Sessões com IA 🤖</div>
+                    <div class="stat-value">${autoSessions}</div>
+                    <div class="stat-label">Sessões com Detecção 🎥</div>
                 </div>
             `;
         }
@@ -1462,11 +1486,11 @@
         // ==================== INICIALIZAR ====================
         window.addEventListener('load', load);
         window.addEventListener('beforeunload', () => {
-            if (recordingState.camera) {
-                recordingState.camera.stop();
-            }
             if (recordingState.stream) {
                 recordingState.stream.getTracks().forEach(t => t.stop());
+            }
+            if (recordingState.analysisInterval) {
+                clearInterval(recordingState.analysisInterval);
             }
         });
     </script>
